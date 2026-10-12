@@ -1,4 +1,4 @@
-#!/usr/bin/python2.5
+#!/usr/bin/env python
 #
 # Copyright 2013 Emilie Gillet.
 # 
@@ -31,6 +31,7 @@
 import logging
 import numpy
 import optparse
+import sys
 import zlib
 
 from stm_audio_bootloader import audio_stream_writer
@@ -42,11 +43,11 @@ class Scrambler(object):
     self._state = seed
     
   def scramble(self, data):
-    data = map(ord, data)
+    data = list(bytearray(data))
     for index, byte in enumerate(data):
       data[index] = data[index] ^ (self._state >> 24)
-      self._state = (self._state * 1664525L + 1013904223L) & 0xffffffff
-    return ''.join(map(chr, data))
+      self._state = (self._state * 1664525 + 1013904223) & 0xffffffff
+    return bytes(bytearray(data))
 
 
 
@@ -59,8 +60,8 @@ class QpskEncoder(object):
       bit_rate=8000,
       packet_size=256,
       scramble=False):
-    period = sample_rate / carrier_frequency
-    symbol_time = sample_rate / (bit_rate / 2)
+    period = sample_rate // carrier_frequency
+    symbol_time = sample_rate // (bit_rate // 2)
     
     assert (symbol_time % period == 0) or (period % symbol_time == 0)
     assert (sample_rate % carrier_frequency) == 0
@@ -78,10 +79,10 @@ class QpskEncoder(object):
     return numpy.tile(x.reshape(len(x), 1), (1, factor)).ravel()
     
   def _encode_qpsk(self, symbol_stream):
-    ratio = self._sr / self._br * 2
+    ratio = self._sr // self._br * 2
     symbol_stream = numpy.array(symbol_stream)
     bitstream_even = 2 * self._upsample(symbol_stream % 2, ratio) - 1
-    bitstream_odd = 2 * self._upsample(symbol_stream / 2, ratio) - 1
+    bitstream_odd = 2 * self._upsample(symbol_stream // 2, ratio) - 1
     return bitstream_even / numpy.sqrt(2.0), bitstream_odd / numpy.sqrt(2.0)
   
   def _modulate(self, q_mod, i_mod):
@@ -102,14 +103,14 @@ class QpskEncoder(object):
   def _code_packet(self, data):
     assert len(data) <= self._packet_size
     if len(data) != self._packet_size:
-      data = data + '\xff' * (self._packet_size - len(data))
+      data = data + b'\xff' * (self._packet_size - len(data))
     
     if self._scrambler:
       data = self._scrambler.scramble(data)
     
     crc = zlib.crc32(data) & 0xffffffff
 
-    data = map(ord, data)
+    data = list(bytearray(data))
     # 16x 0 for the PLL ; 8x 21 for the edge detector ; 8x 3030 for syncing
     preamble = [0] * 8 + [0x99] * 4 + [0xcc] * 4
     crc_bytes = [crc >> 24, (crc >> 16) & 0xff, (crc >> 8) & 0xff, crc & 0xff]
@@ -134,7 +135,7 @@ class QpskEncoder(object):
   def code(self, data, page_size=1024, blank_duration=0.06):
     if len(data) % page_size != 0:
       tail = page_size - (len(data) % page_size)
-      data += '\xff' * tail
+      data += b'\xff' * tail
     
     offset = 0
     remaining_bytes = len(data)
@@ -143,7 +144,7 @@ class QpskEncoder(object):
       size = min(remaining_bytes, self._packet_size)
       yield self._code_packet(data[offset:offset+size])
       num_packets_written += 1
-      if num_packets_written == page_size / self._packet_size:
+      if num_packets_written == page_size // self._packet_size:
         yield self._code_blank(blank_duration)
         num_packets_written = 0
       remaining_bytes -= size
@@ -246,7 +247,6 @@ def main():
       
   
   options, args = parser.parse_args()
-  data = file(args[0], 'rb').read()
   
   if len(args) != 1:
     logging.fatal('Specify one, and only one firmware .bin file!')
@@ -256,6 +256,8 @@ def main():
     logging.fatal('Unknown target: %s' % options.target)
     sys.exit(2)
   
+  data = open(args[0], 'rb').read()
+
   output_file = options.output_file
   if not output_file:
     if '.bin' in args[0]:
@@ -295,7 +297,7 @@ def main():
       start_address = STM32H7_APPLICATION_START
       sector_base = STM32H7_SECTOR_BASE_ADDRESS
       erase_pause = 3.0
-    for x in xrange(0, len(data), block_size):
+    for x in range(0, len(data), block_size):
       address = start_address + x
       block = data[x:x+block_size]
       pause = erase_pause if address in sector_base else 0.2
